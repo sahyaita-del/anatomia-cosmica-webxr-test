@@ -86,3 +86,39 @@ button.ghost { background: transparent; border-color: var(--line); }
   padding: 0 16px;
 }
 #hint.visible { opacity: 1; }
+
+/* ─── Dev panel (desktop preview only) ─────────────────────────────────── */
+#devpanel {
+  position: fixed;
+  left: 16px;
+  right: 16px;
+  bottom: 16px;
+  z-index: 10;
+  display: none;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  font: 12px/1 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  color: var(--fg);
+  background: rgba(10, 14, 24, 0.72);
+  border: 1px solid rgba(233, 240, 255, 0.12);
+  border-radius: 10px;
+  backdrop-filter: blur(6px);
+  opacity: 0.35;
+  transition: opacity 0.3s ease;
+}
+#devpanel:hover { opacity: 1; }
+#devpanel.visible { display: flex; }
+#devpanel button {
+  font: inherit;
+  letter-spacing: 0;
+  padding: 6px 10px;
+  border-radius: 6px;
+  border: 1px solid rgba(233, 240, 255, 0.25);
+  background: transparent;
+}
+#devpanel input[type="range"] { flex: 1 1 240px; accent-color: var(--accent); }
+#devpanel [data-out="time"] { min-width: 56px; text-align: right; }
+#devpanel .jumps { display: flex; gap: 4px; }
+#devpanel .fps { color: var(--dim); min-width: 52px; text-align: right; }

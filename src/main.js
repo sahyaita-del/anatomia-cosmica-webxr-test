@@ -1,76 +1,83 @@
 import * as THREE from 'three';
-import { T, ramp, envelope } from './timeline.js';
-import { createStars } from './stars.js';
+import { T, DURATION, rampR } from './timeline.js';
+import { bakeSky, createStars } from './space.js';
 import { createEarth } from './earth.js';
-import { createWaves, radiusAt } from './wave.js';
-import { createSpatialText } from './text.js';
+import { createSun } from './sun.js';
+import { createAudio } from './audio.js';
+import { createDevPanel } from './devpanel.js';
 import './style.css';
 
-// ─── Renderer ────────────────────────────────────────────────────────────────
+// ─── Scale (the one rule that is never bent) ────────────────────────────────
+const R_EARTH = 0.24; // metres in the scene
+const R_SUN = 109 * R_EARTH; // 26.16 m — true diameter ratio 109:1
+
+// Final composition: Earth and the Sun's centre at the SAME distance from the
+// viewer, so their apparent sizes keep the real ratio (~62° vs ~0.55°).
+// Only the Earth–Sun separation is compressed (the real one would make the
+// Earth invisible); sizes are never scaled.
+const D = 50.8;
+const deg = THREE.MathUtils.degToRad;
+const dirFrom = (az, el) => new THREE.Vector3(Math.sin(deg(az)) * Math.cos(deg(el)), Math.sin(deg(el)), -Math.cos(deg(az)) * Math.cos(deg(el)));
+const SUN_POS = dirFrom(-24, 0).multiplyScalar(D);
+const EARTH_NEAR = new THREE.Vector3(0, -0.06, -2.2); // intimate: ~12.5° wide
+const EARTH_FAR = dirFrom(14, 2).multiplyScalar(D); // ~7° outside the solar limb
+const LIGHT_ACT1 = new THREE.Vector3(-0.72, 0.22, 0.62).normalize(); // lit from front-left
+
+// ─── Renderer ───────────────────────────────────────────────────────────────
 const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.setSize(window.innerWidth, window.innerHeight);
-renderer.setClearColor(0x000000, 1);
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.toneMapping = THREE.NoToneMapping;
 renderer.xr.enabled = true;
 renderer.xr.setReferenceSpaceType('local-floor');
-renderer.xr.setFoveation(1); // fixed foveated rendering on Quest (cheap peripheral pixels)
+renderer.xr.setFoveation(1);
 document.getElementById('app').appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x000000);
+scene.background = bakeSky(renderer, 1024);
+scene.backgroundIntensity = 0;
 
 const EYE_HEIGHT = 1.6;
-const camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.05, 400);
+const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.05, 2500);
 camera.position.set(0, EYE_HEIGHT, 0);
 camera.rotation.order = 'YXZ';
 scene.add(camera);
 
-// ─── Composition ─────────────────────────────────────────────────────────────
-// Everything lives in `world`, whose origin is the viewer's head at the start.
-// In VR it is re-anchored to the real head pose, so the Earth always appears
-// 3 m in front of wherever the user is looking — standing or seated.
+// Everything lives in `world`, whose origin is the viewer's head at start.
 const world = new THREE.Group();
 world.position.set(0, EYE_HEIGHT, 0);
 scene.add(world);
 
-const stars = createStars({ count: 1500, startDelay: T.starsIn[0], revealSpan: T.starsIn[1] - T.starsIn[0] - 1.2 });
+const sunDirLocal = SUN_POS.clone().normalize();
+const stars = createStars({ count: 4000, avoid: [{ dir: sunDirLocal, cosAngle: Math.cos(deg(40)) }] });
 world.add(stars);
 
-const earth = createEarth({ radius: 0.2 });
-earth.group.position.set(0, 0, -3);
+const earth = createEarth(renderer, { radius: R_EARTH });
 world.add(earth.group);
 
-const waves = createWaves({ slots: 4, startRadius: 0.2 });
-scene.add(waves.group); // positioned in world coordinates each frame
+const sun = createSun({ radius: R_SUN });
+sun.group.position.copy(SUN_POS);
+world.add(sun.group);
+scene.add(sun.corona, ...sun.proms); // placed in world coordinates each frame
 
-// Text: slightly below the eye line (the comfortable reading zone), layered
-// in depth. The final question floats behind the Earth, among the stars.
-// Sizes target ~1.3–1.6° cap height: comfortably legible on Quest 3S.
-const text1 = createSpatialText(renderer, 'DESDE HACE APENAS UN SIGLO', { height: 0.08, tracking: 0.28 });
-const text2 = createSpatialText(renderer, 'NUESTRAS SEÑALES VIAJAN\nHACIA LAS ESTRELLAS', { height: 0.08, tracking: 0.28 });
-const text3 = createSpatialText(renderer, '¿QUIÉN PODRÍA ESTAR\nESCUCHANDO?', { height: 0.2, weight: 300, tracking: 0.3 });
-text1.place(new THREE.Vector3(0, -0.4, -2.75));
-text2.place(new THREE.Vector3(0.0, -0.66, -2.5));
-text3.place(new THREE.Vector3(0, 0.82, -5.6));
-world.add(text1.mesh, text2.mesh, text3.mesh);
+const audio = createAudio();
 
-// ─── Timeline state ──────────────────────────────────────────────────────────
+// ─── Playback state ─────────────────────────────────────────────────────────
 let time = 0;
 let playing = false;
-let nextEcho = T.echoStart;
-let firstWaveEmitted = false;
+let mode = 'idle'; // 'idle' | 'preview' | 'xr'
 
+function seek(t) {
+  time = THREE.MathUtils.clamp(t, 0, DURATION);
+  audio.stopAll(); // audio.update() restarts sources at the new offset
+}
 function restart() {
-  time = 0;
+  seek(0);
   playing = true;
-  nextEcho = T.echoStart;
-  firstWaveEmitted = false;
-  waves.reset();
 }
 
-// ─── Desktop preview controls (look + walk, to feel the parallax) ───────────
+// ─── Desktop preview controls ───────────────────────────────────────────────
 let yaw = 0;
 let pitch = 0;
 const keys = new Set();
@@ -87,8 +94,10 @@ renderer.domElement.addEventListener('pointermove', (e) => {
 });
 window.addEventListener('keydown', (e) => {
   keys.add(e.code);
-  if (e.code === 'KeyR' && !renderer.xr.isPresenting) restart();
-  if (e.code === 'Escape' && !renderer.xr.isPresenting) showOverlay(true);
+  if (mode !== 'preview') return;
+  if (e.code === 'KeyR') restart();
+  if (e.code === 'Space') togglePlay();
+  if (e.code === 'Escape') showOverlay(true);
 });
 window.addEventListener('keyup', (e) => keys.delete(e.code));
 
@@ -99,7 +108,6 @@ function updateDesktopCamera(dt) {
   if (move.lengthSq() > 0) {
     move.normalize().multiplyScalar(dt * 0.8).applyAxisAngle(THREE.Object3D.DEFAULT_UP, -yaw);
     camera.position.add(move);
-    // Stay within a room-sized area around the start point, like in VR.
     camera.position.x = THREE.MathUtils.clamp(camera.position.x, -1.5, 1.5);
     camera.position.z = THREE.MathUtils.clamp(camera.position.z, -1.5, 1.5);
   }
@@ -114,31 +122,58 @@ function resetDesktopCamera() {
   world.rotation.set(0, 0, 0);
 }
 
-// ─── WebXR session ───────────────────────────────────────────────────────────
+// ─── UI ─────────────────────────────────────────────────────────────────────
 const overlay = document.getElementById('overlay');
 const vrButton = document.getElementById('enter-vr');
 const previewButton = document.getElementById('preview');
 const status = document.getElementById('status');
-const hint = document.getElementById('hint');
 
-let recenterFrames = 0;
+function togglePlay() {
+  if (time >= DURATION) restart();
+  else playing = !playing;
+}
+
+const dev = createDevPanel({
+  getTime: () => time,
+  isPlaying: () => playing,
+  onPlayPause: togglePlay,
+  onRestart: restart,
+  onSeek: (t) => {
+    if (mode !== 'preview') enterPreview(false);
+    seek(t);
+  },
+});
 
 function showOverlay(visible) {
   overlay.classList.toggle('hidden', !visible);
   if (visible) {
     playing = false;
-    time = 0;
-    waves.reset();
+    mode = 'idle';
+    seek(0);
+    dev.show(false);
   }
 }
 
+function enterPreview(autoplay = true) {
+  audio.unlock();
+  resetDesktopCamera();
+  overlay.classList.add('hidden');
+  mode = 'preview';
+  dev.show(true);
+  if (autoplay) restart();
+}
+previewButton.addEventListener('click', () => enterPreview(true));
+
+// ─── WebXR ──────────────────────────────────────────────────────────────────
+let recenterFrames = 0;
+
 async function setupVRButton() {
   if (!window.isSecureContext) {
-    status.textContent = 'WebXR requiere HTTPS. Abre la dirección https:// (ver README).';
+    status.textContent = 'WebXR requiere HTTPS (ver README).';
     return;
   }
   if (!('xr' in navigator)) {
-    status.textContent = 'Este navegador no tiene WebXR. Usa la vista previa o Meta Quest Browser.';
+    status.textContent = 'Este navegador no tiene WebXR. Usa la vista previa.';
     return;
   }
   let supported = false;
@@ -158,18 +193,24 @@ async function setupVRButton() {
 async function enterVR() {
   if (renderer.xr.isPresenting) return;
   vrButton.disabled = true;
+  audio.unlock(); // same user gesture
   try {
-    // Must be called directly from the click (user activation).
     const session = await navigator.xr.requestSession('immersive-vr', {
       optionalFeatures: ['local-floor', 'bounded-floor', 'layers'],
     });
     const features = session.enabledFeatures;
     renderer.xr.setReferenceSpaceType(features && !features.includes('local-floor') ? 'local' : 'local-floor');
     session.addEventListener('end', onSessionEnd);
+    // Headset removed / system menu: pause story and music.
+    session.addEventListener('visibilitychange', () => {
+      if (mode === 'xr') playing = session.visibilityState === 'visible';
+    });
     await renderer.xr.setSession(session);
-    showOverlay(false);
+    overlay.classList.add('hidden');
+    dev.show(false);
+    mode = 'xr';
     restart();
-    recenterFrames = 3; // wait for a valid head pose, then anchor the scene
+    recenterFrames = 3;
   } catch (err) {
     console.error(err);
     status.textContent = 'No se pudo iniciar la sesión VR: ' + (err?.message ?? err);
@@ -187,100 +228,112 @@ function onSessionEnd() {
 const headPos = new THREE.Vector3();
 const headDir = new THREE.Vector3();
 function recenterToHead() {
-  // `camera` holds the last XR head pose (three copies it after rendering).
   camera.getWorldPosition(headPos);
   camera.getWorldDirection(headDir);
   world.position.copy(headPos);
   world.rotation.set(0, Math.atan2(-headDir.x, -headDir.z), 0);
 }
 
-previewButton.addEventListener('click', () => {
-  resetDesktopCamera();
-  showOverlay(false);
-  restart();
-  hint.classList.add('visible');
-  setTimeout(() => hint.classList.remove('visible'), 7000);
-});
+function finish() {
+  playing = false;
+  time = DURATION;
+  if (mode === 'xr') renderer.xr.getSession()?.end();
+  else showOverlay(true);
+}
 
 function onResize() {
-  if (renderer.xr.isPresenting) return; // the XR compositor owns the size
+  if (renderer.xr.isPresenting) return;
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
 }
 window.addEventListener('resize', onResize);
 
-// ─── Frame loop ──────────────────────────────────────────────────────────────
-let lastFrame = -1;
-const earthWorld = new THREE.Vector3();
-const eyeWorld = new THREE.Vector3();
-const spinAxis = new THREE.Vector3();
-// Deep-space blue the void takes on while a wavefront passes through you
-// (a clear-colour change: zero rendering cost).
-const WASH = new THREE.Color().setRGB(0.0012, 0.0035, 0.015);
-const su = stars.material.uniforms;
-const tmpQ = new THREE.Quaternion();
+// ─── Choreography ───────────────────────────────────────────────────────────
+const nearDir = EARTH_NEAR.clone().normalize();
+const farDir = EARTH_FAR.clone().normalize();
+const nearDist = EARTH_NEAR.length();
+const qDir = new THREE.Quaternion().setFromUnitVectors(nearDir, farDir);
+const qId = new THREE.Quaternion();
+const qTmp = new THREE.Quaternion();
+const lightLocal = new THREE.Vector3();
+const lightFinal = new THREE.Vector3();
+const lightWorld = new THREE.Vector3();
+const earthFarWorld = new THREE.Vector3();
+const eye = new THREE.Vector3();
+
+function placeEarth(t) {
+  // Exponential recession: the apparent size shrinks at a steady visual rate.
+  const k = rampR(t, T.recede);
+  const dist = nearDist * Math.pow(D / nearDist, k);
+  qTmp.slerpQuaternions(qId, qDir, k);
+  earth.group.position.copy(nearDir).applyQuaternion(qTmp).multiplyScalar(dist);
+}
 
 function pixelScale() {
   if (renderer.xr.isPresenting) {
-    const eye = renderer.xr.getCamera().cameras[0];
-    const h = eye?.viewport?.w;
+    const h = renderer.xr.getCamera().cameras[0]?.viewport?.w;
     return (h > 0 ? h : 1800) / 1000;
   }
   return renderer.domElement.height / 1000;
 }
 
+let lastFrame = -1;
 renderer.setAnimationLoop((now) => {
-  // Clamp dt: if the headset pauses rendering (system menu), the story pauses.
   const dt = lastFrame < 0 ? 0 : Math.min(Math.max((now - lastFrame) / 1000, 0), 0.1);
   lastFrame = now;
   if (playing) time += dt;
+  if (playing && time >= DURATION) finish();
+  const t = time;
 
   if (renderer.xr.isPresenting) {
     if (recenterFrames > 0 && --recenterFrames === 0) recenterToHead();
   } else {
     updateDesktopCamera(dt);
   }
+  scene.backgroundRotation.set(0, world.rotation.y, 0);
 
-  // Sequence
-  if (playing && !firstWaveEmitted && time >= T.waveStart) {
-    waves.emit(T.waveStart, 1.0);
-    firstWaveEmitted = true;
-  }
-  if (playing && time >= nextEcho) {
-    // After the narrative, the planet keeps broadcasting — quieter echoes.
-    waves.emit(nextEcho, 0.45);
-    nextEcho += T.echoEvery;
-  }
+  // Space
+  const spaceVis = rampR(t, T.spaceIn) * (1 - rampR(t, T.spaceOut));
+  const adapt = rampR(t, T.adapt); // eye adapting to the Sun
+  scene.backgroundIntensity = spaceVis * (1 - 0.6 * adapt);
+  stars.material.uniforms.uBright.value = spaceVis * (1 - 0.5 * adapt);
+  stars.material.uniforms.uPxScale.value = pixelScale();
 
+  // Earth
+  placeEarth(t);
   world.updateMatrixWorld();
-  earth.group.getWorldPosition(earthWorld);
+  lightFinal.copy(SUN_POS).sub(earth.group.position).normalize();
+  lightLocal.copy(LIGHT_ACT1).lerp(lightFinal, rampR(t, T.lightTurn)).normalize();
+  lightWorld.copy(lightLocal).applyQuaternion(world.quaternion);
+  earth.update(t, rampR(t, T.earthIn) * (1 - rampR(t, T.earthOut)), lightWorld, 1 + 1.4 * rampR(t, T.recede));
 
-  earth.update(ramp(time, T.earthIn[0], T.earthIn[1]), dt, world.quaternion);
-  waves.setAxis(spinAxis.set(0, 1, 0).applyQuaternion(earth.globe.getWorldQuaternion(tmpQ)));
-  waves.update(time, earthWorld, su);
+  // Sun
+  camera.getWorldPosition(eye);
+  earthFarWorld.copy(EARTH_FAR).applyMatrix4(world.matrixWorld);
+  const bright = 1 - rampR(t, T.sunOut);
+  sun.update(
+    t,
+    {
+      visible: t >= T.sunVisible && bright > 0.001,
+      glow: rampR(t, T.coronaIn) * bright,
+      reveal: rampR(t, T.photoIn),
+      bright,
+    },
+    eye,
+    earthFarWorld,
+  );
 
-  camera.getWorldPosition(eyeWorld);
-  scene.background.copy(WASH).multiplyScalar(waves.crossing(eyeWorld, earthWorld));
-
-  su.uTime.value = time;
-  su.uPxScale.value = pixelScale();
-  su.uCenter.value.copy(earthWorld);
-  su.uFirstR.value = firstWaveEmitted ? radiusAt(time - T.waveStart, 0.2) : -1;
-
-  text1.update(envelope(time, T.text1In, T.textsOut), time > T.text1In[0] ? (time - T.text1In[0]) * 0.004 : 0);
-  text2.update(envelope(time, T.text2In, T.textsOut), time > T.text2In[0] ? (time - T.text2In[0]) * 0.004 : 0);
-  text3.update(envelope(time, T.text3In), Math.min(Math.max(time - T.text3In[0], 0), 40) * 0.003);
-
+  audio.update(t, playing);
+  if (mode === 'preview') dev.tick();
   renderer.render(scene, camera);
 });
 
 setupVRButton();
 
-// Review helper: `?t=20` opens the desktop preview already at second 20.
+// Review helper: `?t=45` opens the desktop preview paused at second 45.
 const jump = parseFloat(new URLSearchParams(location.search).get('t'));
 if (Number.isFinite(jump)) {
-  showOverlay(false);
-  restart();
-  time = Math.max(0, jump);
+  enterPreview(false);
+  seek(jump);
 }

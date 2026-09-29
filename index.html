@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="theme-color" content="#000000" />
-    <title>Señales</title>
+    <title>La Tierra y el Sol</title>
     <link rel="icon" href="data:," />
   </head>
   <body>
@@ -12,9 +12,9 @@
 
     <div id="overlay">
       <div class="panel">
-        <p class="eyebrow">Anatomía cósmica · prueba de concepto</p>
-        <h1>Señales</h1>
-        <p class="lede">Una experiencia inmersiva de 35 segundos.<br />Ponte de pie, con espacio libre alrededor.</p>
+        <p class="eyebrow">Anatomía cósmica</p>
+        <h1>La Tierra y el Sol</h1>
+        <p class="lede">Una experiencia inmersiva de un minuto y medio.<br />Ponte de pie, mira y escucha.</p>
         <div class="actions">
           <button id="enter-vr" disabled>ENTER VR</button>
           <button id="preview" class="ghost">VISTA PREVIA</button>
@@ -23,7 +23,17 @@
       </div>
     </div>
 
-    <p id="hint">Arrastra para mirar · WASD para moverte · R reinicia · Esc vuelve</p>
+    <!-- Desktop-only development panel (DOM: never visible inside VR) -->
+    <div id="devpanel">
+      <button data-act="play">Play</button>
+      <button data-act="restart">Reiniciar</button>
+      <input type="range" min="0" max="85" step="0.05" value="0" aria-label="Línea de tiempo" />
+      <span data-out="time">0.0 s</span>
+      <span class="jumps">
+        <button data-jump="20">20</button><button data-jump="30">30</button><button data-jump="35">35</button><button data-jump="45">45</button><button data-jump="60">60</button><button data-jump="75">75</button>
+      </span>
+      <span data-out="fps" class="fps">– fps</span>
+    </div>
 
     <script type="module" src="/src/main.js"></script>
   </body>

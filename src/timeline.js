@@ -1,29 +1,34 @@
-// Narrative timeline (seconds). Every visual reads from here, so the whole
-// piece can be re-timed from a single place.
+// Narrative timeline (seconds). Every visual and audio level is a pure
+// function of `t`, so the dev scrubber can jump anywhere deterministically.
+
+export const DURATION = 85;
 
 export const T = {
-  starsIn: [0.4, 5.0], // stars appear progressively
-  earthIn: [5.0, 10.0], // Earth emerges from darkness
-  waveStart: 10.0, // first electromagnetic wave leaves Earth
-  text1In: [11.0, 14.5], // "DESDE HACE APENAS UN SIGLO"
-  text2In: [18.5, 22.0], // "NUESTRAS SEÑALES VIAJAN HACIA LAS ESTRELLAS"
-  textsOut: [26.0, 28.8], // both texts dissolve
-  text3In: [29.0, 34.5], // "¿QUIÉN PODRÍA ESTAR ESCUCHANDO?"
-  echoStart: 42.0, // afterwards: Earth keeps broadcasting, softly
-  echoEvery: 18.0,
+  spaceIn: [0.5, 6.0], // black → deep space
+  earthIn: [4.5, 11.0], // Earth emerges
+  recede: [25.0, 34.0], // Earth moves away: the world opens
+  lightTurn: [25.0, 40.0], // Earth's light turns toward the real Sun position
+  coronaIn: [31.5, 40.0], // first: a warm presence, the Sun's light
+  sunVisible: 31.5, // silhouette of the (still dark) sphere starts eclipsing stars
+  photoIn: [35.0, 45.5], // the photosphere dawns across the sphere
+  adapt: [33.0, 46.0], // eye adaptation: stars and sky dim beside the Sun
+  spaceOut: [70.0, 79.0],
+  sunOut: [72.0, 82.5],
+  earthOut: [77.0, 84.0], // home is the last thing to leave
+};
+
+// Audio sync (see README → Música).
+export const AUDIO = {
+  earth: { start: 0, fadeIn: [0, 3], fadeOut: [27, 32] },
+  sun: { start: 27, fadeIn: [27, 32], fadeOut: [78, 85] },
 };
 
 export const clamp01 = (x) => Math.min(1, Math.max(0, x));
 
-// Smooth 0→1 between a and b (smootherstep: zero velocity and acceleration at
-// both ends — reads as "cinematic" rather than mechanical).
+// Smootherstep between a and b: zero velocity and acceleration at both ends.
 export function ramp(t, a, b) {
   const x = clamp01((t - a) / (b - a));
   return x * x * x * (x * (x * 6 - 15) + 10);
 }
 
-// Fade in over [in0,in1] and optionally out over [out0,out1].
-export function envelope(t, inRange, outRange) {
-  const v = ramp(t, inRange[0], inRange[1]);
-  return outRange ? v * (1 - ramp(t, outRange[0], outRange[1])) : v;
-}
+export const rampR = (t, r) => ramp(t, r[0], r[1]);
