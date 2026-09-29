@@ -136,9 +136,11 @@ function togglePlay() {
 const dev = createDevPanel({
   getTime: () => time,
   isPlaying: () => playing,
-  onPlayPause: togglePlay,
-  onRestart: restart,
+  // Every panel action is a user gesture: use it to unlock audio playback.
+  onPlayPause: () => (audio.unlock(), togglePlay()),
+  onRestart: () => (audio.unlock(), restart()),
   onSeek: (t) => {
+    audio.unlock();
     if (mode !== 'preview') enterPreview(false);
     seek(t);
   },

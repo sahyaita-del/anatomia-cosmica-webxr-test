@@ -17,10 +17,12 @@ export const T = {
   earthOut: [77.0, 84.0], // home is the last thing to leave
 };
 
-// Audio sync (see README → Música).
+// Audio sync (see README → Música). Hard cuts, no crossfade:
+//   earth.mp3  0 → 30 s · silence 30 → 31 s · sun.mp3 31 → 85 s,
+//   with a timeline-controlled fade-out of the Sun track from 75 to 85 s.
 export const AUDIO = {
-  earth: { start: 0, fadeIn: [0, 3], fadeOut: [27, 32] },
-  sun: { start: 27, fadeIn: [27, 32], fadeOut: [78, 85] },
+  earth: { file: 'earth.mp3', start: 0, end: 30 },
+  sun: { file: 'sun.mp3', start: 31, end: 85, fadeOut: [75, 85] },
 };
 
 export const clamp01 = (x) => Math.min(1, Math.max(0, x));

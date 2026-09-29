@@ -1,50 +1,50 @@
-import { AUDIO, ramp } from './timeline.js';
+import { AUDIO } from './timeline.js';
 
-// Two-track music system driven by the narrative clock.
+// Soundtrack: two stereo tracks, NOT positional. They connect straight to the
+// output (no panner, no 3D object), like cinematic background music.
 //
-// Place the final files in /public/audio/ (see README):
-//   tierra.(mp3|m4a|ogg)  → Earth piece, starts at AUDIO.earth.start
-//   sol.(mp3|m4a|ogg)     → Sun piece,   starts at AUDIO.sun.start
-// Missing files are simply silent: the experience runs without them.
+//   earth.mp3   plays 0 → 30 s
+//   (silence)   30 → 31 s
+//   sun.mp3     plays 31 → 85 s, with a volume fade 75 → 85 s
 //
-// The timeline is the master clock. Every frame we compute each track's
-// expected position and gain; a source is (re)started when it should be
-// playing but isn't, or when it drifts > 0.25 s (after seeks/pauses).
+// The narrative timeline is the master clock. Each frame we check where each
+// track *should* be; a source is (re)started at the right file offset when it
+// should be playing but isn't, or when it drifted > 0.25 s. Starts, stops and
+// the fade are scheduled on the AudioContext clock, so they land on the exact
+// timeline second rather than on the next video frame.
 
-const EXTS = ['mp3', 'm4a', 'ogg'];
+const RESYNC = 0.25; // s of drift tolerated before re-seeking
+const LOOKAHEAD = 0.1; // s: schedule a start slightly before it's due
+const SNAP = 0.12; // s: late starts closer than this to the file start snap to 0
+const TAIL = 0.2; // s: let a source reach its own scheduled end
+
+// Smooth 1 → 0 fade curve (cosine / equal-power shape).
+const FADE_CURVE = Float32Array.from({ length: 256 }, (_, i) => Math.cos(((i / 255) * Math.PI) / 2));
 
 export function createAudio() {
   const Ctx = window.AudioContext || window.webkitAudioContext;
   const ctx = Ctx ? new Ctx() : null;
   const base = import.meta.env.BASE_URL;
 
-  const tracks = [
-    { name: 'tierra', cfg: AUDIO.earth, buffer: null, gain: null, src: null, srcStartCtx: 0, srcOffset: 0 },
-    { name: 'sol', cfg: AUDIO.sun, buffer: null, gain: null, src: null, srcStartCtx: 0, srcOffset: 0 },
-  ];
+  const tracks = [AUDIO.earth, AUDIO.sun].map((cfg) => ({ cfg, buffer: null, gain: null, src: null, anchor: 0 }));
 
-  async function loadTrack(tr) {
-    for (const ext of EXTS) {
-      try {
-        const res = await fetch(`${base}audio/${tr.name}.${ext}`);
-        const type = res.headers.get('content-type') || '';
-        if (!res.ok || type.includes('text/html')) continue; // dev server SPA fallback
-        tr.buffer = await ctx.decodeAudioData(await res.arrayBuffer());
-        console.info(`[audio] ${tr.name}.${ext} cargado (${tr.buffer.duration.toFixed(1)} s)`);
-        return;
-      } catch {
-        /* try next extension */
-      }
+  async function load(tr) {
+    try {
+      const res = await fetch(`${base}audio/${tr.cfg.file}`);
+      const type = res.headers.get('content-type') || '';
+      if (!res.ok || type.includes('text/html')) throw new Error(`HTTP ${res.status}`);
+      tr.buffer = await ctx.decodeAudioData(await res.arrayBuffer());
+      console.info(`[audio] ${tr.cfg.file} listo (${tr.buffer.duration.toFixed(3)} s)`);
+    } catch (err) {
+      console.warn(`[audio] no se pudo cargar ${tr.cfg.file}:`, err.message ?? err);
     }
-    console.info(`[audio] ${tr.name}: sin archivo, se reproduce en silencio`);
   }
 
   if (ctx) {
     for (const tr of tracks) {
       tr.gain = ctx.createGain();
-      tr.gain.gain.value = 0;
       tr.gain.connect(ctx.destination);
-      loadTrack(tr);
+      load(tr);
     }
   }
 
@@ -53,23 +53,54 @@ export function createAudio() {
     try {
       tr.src.stop();
     } catch {
-      /* already stopped */
+      /* not started yet / already stopped */
     }
     tr.src.disconnect();
     tr.src = null;
+    tr.gain.gain.cancelScheduledValues(0);
   }
 
-  function levels(t) {
-    const e = AUDIO.earth;
-    const s = AUDIO.sun;
-    // Equal-power crossfade.
-    const earth = ramp(t, e.fadeIn[0], e.fadeIn[1]) * Math.cos((ramp(t, e.fadeOut[0], e.fadeOut[1]) * Math.PI) / 2);
-    const sun = Math.sin((ramp(t, s.fadeIn[0], s.fadeIn[1]) * Math.PI) / 2) * (1 - ramp(t, s.fadeOut[0], s.fadeOut[1]));
-    return [earth, sun];
+  // Start `tr` so that timeline second `t` corresponds to ctx time `now`.
+  function start(tr, t, now) {
+    const { start: t0, end: t1, fadeOut } = tr.cfg;
+    let offset = t - t0; // may be slightly negative (look-ahead start)
+    // Just past the start (Play/Restart lands one video frame late): begin at
+    // the file's first sample so its built-in micro-fade is never clipped.
+    if (offset > 0 && offset < SNAP) offset = 0;
+    const when = now + Math.max(0, -offset);
+    const src = ctx.createBufferSource();
+    src.buffer = tr.buffer;
+    src.connect(tr.gain);
+    src.start(when, Math.max(0, offset));
+    src.stop(when + (t1 - t0 - Math.max(0, offset))); // ends at the track's end second
+    tr.src = src;
+    tr.anchor = offset === 0 && t > t0 ? now - t0 : now - t; // ctx time of timeline second 0
+
+    // Gain automation, aligned to the timeline.
+    const g = tr.gain.gain;
+    g.cancelScheduledValues(0);
+    if (!fadeOut) {
+      g.setValueAtTime(1, now);
+      return;
+    }
+    const [f0, f1] = fadeOut;
+    if (t < f0) {
+      g.setValueAtTime(1, now);
+      g.setValueCurveAtTime(FADE_CURVE, now + (f0 - t), f1 - f0);
+    } else if (t < f1) {
+      // Mid-fade (after a seek): continue from the current point of the curve.
+      const x = (t - f0) / (f1 - f0);
+      const i = Math.floor(x * (FADE_CURVE.length - 1));
+      const rest = FADE_CURVE.slice(i);
+      if (rest.length >= 2) g.setValueCurveAtTime(rest, now, f1 - t);
+      else g.setValueAtTime(0, now);
+    } else {
+      g.setValueAtTime(0, now);
+    }
   }
 
   return {
-    // Must be called from a user gesture (click) to allow playback.
+    // Call from a user gesture (VISTA PREVIA / ENTER VR click): autoplay policy.
     unlock() {
       if (ctx && ctx.state !== 'running') ctx.resume();
     },
@@ -78,28 +109,27 @@ export function createAudio() {
     },
     update(t, playing) {
       if (!ctx) return;
-      const g = levels(t);
-      tracks.forEach((tr, i) => {
-        tr.gain.gain.setTargetAtTime(playing ? g[i] : 0, ctx.currentTime, 0.06);
-        if (!tr.buffer) return;
-        const offset = t - tr.cfg.start;
-        const inRange = offset >= 0 && offset < tr.buffer.duration;
-        if (!playing || !inRange || ctx.state !== 'running') {
+      const now = ctx.currentTime;
+      for (const tr of tracks) {
+        if (!tr.buffer) continue;
+        const { start: t0, end: t1 } = tr.cfg;
+        if (!playing || ctx.state !== 'running') {
           stop(tr);
-          return;
+          continue;
         }
-        const actual = tr.src ? ctx.currentTime - tr.srcStartCtx + tr.srcOffset : -1;
-        if (!tr.src || Math.abs(actual - offset) > 0.25) {
+        const due = t >= t0 - LOOKAHEAD && t < t1;
+        if (!due) {
+          // Past the end: the source stops itself at its scheduled end second.
+          if (!(tr.src && t >= t1 && t < t1 + TAIL)) stop(tr);
+          continue;
+        }
+        if (tr.src) {
+          const drift = now - tr.anchor - t; // + means audio is ahead
+          if (Math.abs(drift) <= RESYNC) continue;
           stop(tr);
-          const src = ctx.createBufferSource();
-          src.buffer = tr.buffer;
-          src.connect(tr.gain);
-          src.start(0, offset);
-          tr.src = src;
-          tr.srcStartCtx = ctx.currentTime;
-          tr.srcOffset = offset;
         }
-      });
+        start(tr, t, now);
+      }
     },
   };
 }

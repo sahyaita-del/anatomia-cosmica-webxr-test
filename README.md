@@ -35,17 +35,18 @@ Abre `https://localhost:5173` (acepta el aviso del certificado) → **VISTA PREV
 
 ## Música
 
-Coloca los dos archivos finales en `public/audio/` con estos nombres
-(formato `.mp3`, `.m4a` u `.ogg`):
+Archivos en `public/audio/` (estéreo, no posicional: suenan como banda sonora,
+no están ligados a ningún objeto 3D):
 
-| Archivo | Pieza | Empieza | Fundidos |
-|---|---|---|---|
-| `tierra.mp3` | Tierra (íntima, ~30 s) | 0 s | entra 0–3 s · sale 27–32 s |
-| `sol.mp3` | Sol (monumental, ~55 s) | 27 s | entra 27–32 s · sale 78–85 s |
+| Archivo | Suena | Notas |
+|---|---|---|
+| `earth.mp3` (30 s) | 0 → 30 s | sin fundido programado (el archivo ya trae su micro-fade) |
+| — | 30 → 31 s | silencio |
+| `sun.mp3` (54 s) | 31 → 85 s | fundido de volumen programado 75 → 85 s (llega a 0 en 85 s) |
 
-El crossfade es de potencia constante. La línea de tiempo manda: al pausar,
-saltar o reiniciar, la música se resincroniza sola. Tiempos editables en
-`src/timeline.js` → `AUDIO`. Sin archivos, la experiencia funciona en silencio.
+Sin crossfade entre pistas. La línea de tiempo manda: al pausar, saltar o
+reiniciar, la música se recoloca en el punto correcto del archivo (p. ej.
+segundo 45 → `sun.mp3` en su segundo 14). Tiempos en `src/timeline.js` → `AUDIO`.
 
 ## Coreografía (`src/timeline.js`)
 
